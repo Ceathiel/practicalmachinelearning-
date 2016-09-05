@@ -1,0 +1,154 @@
+---
+title: 'Practical Machine Learning Project: Predicting Quality of Weight Lifting Exercise'
+author: "Rhea Lucas"
+date: "August 30, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+## Summary
+
+This analysis aims to find a good model for predicting the quality of weight lifting exercises as part of the Practical Machine Learning class by Johns Hopkins University in Coursera. The data for this analysis was sourced from http://groupware.les.inf.puc-rio.br/har.
+
+Based on comparison done between boosting and randomforest algorithm for predictions, it is apparent that randomforest performs better in predicting the quality of exercise.
+
+## Loading and Exploring the Data
+
+We are provided with a pml-training dataset to create and test the model and a pml-testing dataset where we are to validate our model one time. There are 160 variables in the dataset and the quality of the exercise which we are trying to predict is in the classe variable. After we load the data sets, we split the pml-training dataset further to training and testing sets which we will use for refining our model.
+
+```{r dataload}
+pmlTraining <- read.csv("pml-training.csv", header = T, na.strings=c("NA", " ", ""))
+pmlTesting <- read.csv("pml-testing.csv", header = T, na.strings=c("NA", " ", ""))
+
+library(caret)
+set.seed(123)
+inTrain <- createDataPartition(y=pmlTraining$classe, p=0.6, list=FALSE)
+training <- pmlTraining[inTrain,]
+testing <- pmlTraining[-inTrain,]
+
+```
+
+We can now explore the training set to start making our model. The summary of the data (refer to appendix) shows that there are actually a lot of NA's in some variables. In fact, if we try to look at the complete cases we have, there are only about 2% complete observations to work with. 
+
+```{r completecases}
+#Find out how many incomplete cases we have
+compCases <- complete.cases(training)
+table(compCases)
+```
+
+If we look at variables containing more than 80% NA's we see that they are actually NA for the same rows across the dataset where we have incomplete cases so it might be best to remove rather than impute for creating the model.
+
+```{r nacols}
+#Find columns where 80% of the values are NA
+NAcols <- colnames(training)[colSums(is.na(training)) > (.8*nrow(training))]
+
+#check if NA across the same rows in the dataset where we have incomplete cases
+all(is.na(training[!compCases, NAcols]))
+```
+
+So now, we create a smaller dataset with NA columns removed along with the columns we identified as possible confounders and similarly subset out testing and validation sets.
+
+We also know some variables in the dataset might not be good predictors as they are not related to the quality of the exercise and may end up confounding our predictions. For example, if we plot X, classe and user_name in the training dataset, we can see that the observations are ordered by X, with classe A exercises going first, and so on.
+
+```{r plotx}
+library(ggplot2)
+qplot(X, classe, data=training, color=user_name, main="Index (X) vs Classe Plot")
+```
+
+This is a pattern that we don't necessarily want our model to pick up, so we also remove these variables when creating the model:
+
+* X - index for the observations
+* user_name - person performing the exercise
+* raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window - variables related to when were the exercise performed
+
+```{r subtraining}
+#Create subset data frame with NA columns removed
+trainingsub <- training[, !colSums(is.na(training)) > (.8*nrow(training))]
+testingsub <- testing[, !colSums(is.na(training)) > (.8*nrow(training))]
+validation <- pmlTesting[, !colSums(is.na(training)) > (.8*nrow(training))]
+
+#Remove possible confounders found in column 1-7
+trainingsub <- trainingsub[,8:60]
+testingsub <- testingsub[,8:60]
+validation <- validation[,8:60]
+```
+
+Finally we remove columns that are highly correlated. This is done by creating a correlation matrix then using the `findCorrelated` function from caret package which gives us the columns to remove from our dataset.
+
+```{r corplot}
+#correlation matrix leaving out the classe variable
+corMatrix <- cor(trainingsub[, 1:52])
+
+#generate columns to remove
+highlyCorrelated <- findCorrelation(corMatrix, cutoff=0.9, names = TRUE)
+
+#remove highly correlated columns in all 3 datasets
+trainingsub <- trainingsub[!(names(trainingsub) %in% highlyCorrelated)]
+testingsub <- testingsub[!(names(testingsub) %in% highlyCorrelated)]
+validation <- validation[!(names(validation) %in% highlyCorrelated)]
+```
+
+Now we start fitting models to our data. We will try 2 methods - boosting (gbm) and randomforest (rf). As mentioned in the class, these are 2 of the most accurate algorithms. We will be using 10-fold cross validation as part of the training method for all 3 algorithms.
+
+```{r model}
+set.seed(12345)
+
+# use 10-fold cross validation as training control
+train_control <- trainControl(method="cv", number=10)
+
+#create boosting model
+modgbm <- train(classe ~ ., data = trainingsub, method="gbm", trControl=train_control, verbose=F)
+
+#create randomforest model
+modrf <- train(classe ~ ., data = trainingsub, method="rf", trControl=train_control, verbose=F)
+
+```
+
+Now we can predict the values for our testing set using both models and compare the results.
+
+```{r predict}
+#predict classe for the testing set
+predgbm <- predict(modgbm, testingsub)
+predrf <- predict(modrf, testingsub)
+
+#test accuracy for predictions
+confgbm <- confusionMatrix(predgbm, testingsub$classe)
+confrf <- confusionMatrix(predrf, testingsub$classe)
+```
+
+Looking at the results for both methods, we can see that the accuracy is pretty high for both (above 95%) with randomforest performing a bit better.
+
+```{r accuracy}
+#show accuracy and kappa
+confgbm$overall
+confrf$overall
+```
+
+This is also apparent when we look at the prediction table where we see that randomforest had fewer errors in predictions. For both cases though, we have the most errors in predicting classe C exercise.
+
+```{r predtable}
+#randomforest table
+confrf$table
+#boosting table
+confgbm$table
+```
+
+Finally, seeing that randomforest has better performance in predictions, we will now use this for predicting the classe variable for our validation set.
+
+```{r validate}
+predict(modrf, validation)
+```
+
+Upon answering the quiz using this result set a 100% prediction (20/20) was the result.
+
+## Appendix
+
+Summary of training data:
+
+```{r datasummary}
+summary(training)
+```
